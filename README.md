@@ -37,6 +37,9 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage 
 ## Quick Start
 
 ```bash
+# Apple Containers (macOS 26+, Apple silicon)
+./scripts/apple-container.sh up
+
 # Docker (recommended)
 docker volume create codex-lb-data
 docker network inspect codex-lb-net >/dev/null 2>&1 || docker network create codex-lb-net
@@ -54,6 +57,8 @@ nix run github:Soju06/codex-lb
 ```
 
 Open [localhost:2455](http://localhost:2455) → Add account → Done.
+
+Apple silicon setup details: [Apple Containers deployment](docs/deployment/apple-containers.md).
 
 Accessing the dashboard remotely for the first time? You need a one-time bootstrap token —
 see [Getting started](https://soju06.github.io/codex-lb/getting-started/).
@@ -111,7 +116,7 @@ Full docs live at **<https://soju06.github.io/codex-lb/>**:
 - [API keys](https://soju06.github.io/codex-lb/api-keys/) — protecting proxy routes
 - [Routing](https://soju06.github.io/codex-lb/routing/) — strategy guide
 - [Database](https://soju06.github.io/codex-lb/database/) — SQLite / PostgreSQL, Postgres 16 → 18 upgrade
-- [Deployment](https://soju06.github.io/codex-lb/deployment/docker/) — [Docker](https://soju06.github.io/codex-lb/deployment/docker/), [Kubernetes](https://soju06.github.io/codex-lb/deployment/kubernetes/), [remote access](https://soju06.github.io/codex-lb/deployment/remote/)
+- [Deployment](docs/deployment/apple-containers.md) — Apple Containers, [Docker](https://soju06.github.io/codex-lb/deployment/docker/), [Kubernetes](https://soju06.github.io/codex-lb/deployment/kubernetes/), [remote access](https://soju06.github.io/codex-lb/deployment/remote/)
 - [Troubleshooting](https://soju06.github.io/codex-lb/troubleshooting/)
 
 ### Community companions
