@@ -1,10 +1,13 @@
 # Getting Started
 
-codex-lb runs with zero configuration — every setting has a working default, and Docker vs. host paths are auto-detected.
+codex-lb runs with zero configuration — every setting has a working default, and container vs. host paths are auto-detected.
 
 ## Quick Start
 
 ```bash
+# Apple Containers (macOS 26+, Apple silicon)
+./scripts/apple-container.sh up
+
 # Docker (recommended)
 docker volume create codex-lb-data
 docker run -d --name codex-lb \
@@ -20,6 +23,12 @@ nix run github:Soju06/codex-lb
 ```
 
 Open [localhost:2455](http://localhost:2455) → Add account → Done.
+
+The Apple path builds the checked-out source, binds only to localhost,
+recognizes the runtime-assigned Mac gateway for local Codex traffic, and
+preserves data in `codex-lb-data`. See the
+[Apple Containers guide](deployment/apple-containers.md) for prerequisites,
+lifecycle commands, upgrades, and troubleshooting.
 
 Next: point your coding agent at codex-lb — see [Client Setup](client-setup.md).
 
