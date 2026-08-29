@@ -16,7 +16,7 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage 
 
 ## Where to go
 
-- [Getting Started](getting-started.md) — Docker / uvx quick start, remote bootstrap token
+- [Getting Started](getting-started.md) — Apple Containers / Docker / uvx quick start, remote bootstrap token
 - [Client Setup](client-setup.md) — Codex CLI, OpenCode, OpenClaw, Python SDK
 - [Configuration](configuration.md) — the few settings that matter
 - [Anonymous Telemetry](telemetry.md) — collected fields, consent, disabling, and retention
@@ -25,7 +25,7 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage 
 - [API Keys](api-keys.md) — protecting proxy routes
 - [Routing](routing.md) — routing strategy guide
 - [Database](database.md) — SQLite / PostgreSQL, data paths, Postgres upgrades
-- [Deployment](deployment/docker.md) — Docker, [Kubernetes](deployment/kubernetes.md), [remote access](deployment/remote.md)
+- [Deployment](deployment/apple-containers.md) — Apple Containers, [Docker](deployment/docker.md), [Kubernetes](deployment/kubernetes.md), [remote access](deployment/remote.md)
 - [Troubleshooting](troubleshooting.md)
 
 ## Screenshots

@@ -432,3 +432,133 @@ removed setting(s) ignored: CODEX_LB_LOG_UPSTREAM_REQUEST_PAYLOAD — values are
 and the equivalent incident-debugging behavior is re-enabled interactively
 with `CODEX_LB_TRACE=upstream_payload`. Startup never fails because of a
 removed setting, and the fixed built-in value is used.
+
+## Apple Containers local deployment
+
+### Purpose and boundaries
+
+The Apple Containers path gives Apple silicon users a native, Docker
+Desktop-free way to run the default single-replica SQLite topology from a
+checkout. The normative host, lifecycle, networking, persistence, and
+documentation contracts are in the three Apple Containers requirements in
+`spec.md`.
+
+This path deliberately does not translate Docker Compose. The default app is
+one container with SQLite, so a small repository-owned lifecycle script is
+more direct and auditable than a general Compose compatibility layer. The
+PostgreSQL profiles, multi-replica deployments, Intel/Rosetta hosts, pre-macOS
+26 networking, LAN exposure, and background login-item management remain out
+of scope; Docker/Helm and the authenticated remote-access guide continue to
+own those cases.
+
+### Decisions and constraints
+
+`scripts/apple-container.sh` reuses the production `Dockerfile` and builds a
+local `linux/arm64` image. That keeps checked-out source and the running image
+in lockstep and avoids a second Apple-specific image definition. The script
+depends only on the supported host's POSIX shell, Apple `container`, and
+`curl`; application dependencies remain inside the image.
+
+The runtime object is fixed to `codex-lb`, tagged with
+`io.codex-lb.managed-by=apple-container-script`, and published only on
+`127.0.0.1:2455` and `127.0.0.1:1455`. A same-name object without that label is
+treated as someone else's container and is never stopped or deleted. The data
+mount is the reusable Apple named volume `codex-lb-data` at
+`/var/lib/codex-lb`; lifecycle operations never invoke volume deletion or
+pruning. Apple creates the mount root as `root:root`, so `up` uses a short-lived
+root process from the production image to change only that directory to
+`app:app`; the application itself keeps the image's non-root user. Because the
+Apple guest also lacks Docker's `/.dockerenv` marker, the main launch explicitly
+sets `CODEX_LB_DATA_DIR=/var/lib/codex-lb` after loading any repository-root
+`.env.local`. This guarantees that zero-config state reaches the persistent
+mount rather than the container VM's ephemeral home directory.
+
+Apple's loopback publication crosses the VM boundary, so the application sees
+the Mac-side IPv4 gateway as the raw socket peer rather than `127.0.0.1`.
+Protected proxy routes use that raw peer for their local/no-key decision. On
+each `up`, the launcher therefore inspects `container network inspect default`,
+requires exactly one valid `status.ipv4Gateway`, explicitly attaches the
+workload to that same `default` network, and appends
+`CODEX_LB_PROXY_UNAUTHENTICATED_CLIENT_CIDRS=<gateway>/32` after `.env.local`.
+The ordering makes this exact-host value lifecycle-owned: a file value cannot
+replace it with a stale address or a broader subnet.
+
+For example, the development Mac reported `192.168.64.1`, so its container
+received `192.168.64.1/32`. That address is observed evidence, not a portable
+constant; another Mac or a customized Apple runtime network may use a different
+gateway. The launcher never authorizes the full VM subnet.
+
+The `/32` authenticates the Mac-side relay boundary, not the original client.
+It is appropriate only while the shipped ports remain loopback-only and no
+host reverse proxy, tunnel, LAN publication, or other relay is present. Those
+deployment shapes must enable API-key authentication, which remains
+authoritative over the CIDR exception and still requires a valid key.
+
+After gateway discovery succeeds, `up` builds before it stops an existing
+managed instance. This intentionally keeps the previous process serving if
+network inspection, compilation, or dependency download fails. A same-port
+local replacement cannot be fully blue/green, so a failure after the old
+process stops can still cause downtime; the preserved image and volume make
+recovery another `up` invocation rather than a data migration.
+
+### Concrete flow
+
+On a supported fresh Mac:
+
+```bash
+./scripts/apple-container.sh up
+open http://localhost:2455
+```
+
+The command checks the host and CLI, starts Apple container services (including
+the default kernel install when needed), resolves the current `default` network
+gateway, builds the image, initializes the `codex-lb-data` mount root, launches
+the non-root application on that network with its data path and gateway `/32`
+pinned, and polls `/health/ready`. A successful readiness response proves the
+database path is writable and the published application port works; VM
+creation alone is not treated as success. Protected HTTP and WebSocket traffic
+must be exercised separately because readiness is intentionally unprotected.
+
+Running `up` again rebuilds and replaces only the labeled container while
+reusing its data and refreshing the gateway-derived environment. `restart`
+skips both discovery and build because it reuses the existing immutable
+container configuration; after changing Apple's default network, run `up`.
+`down` removes the labeled container but preserves `codex-lb-data`; `status`
+and `logs` are read-only inspection paths.
+
+### Failure modes and recovery
+
+- An unsupported CPU, macOS release, or pre-1.3 CLI fails before build or
+  container mutation. Upgrade the host/runtime rather than forcing a degraded
+  compatibility path.
+- A stopped Apple container service is started automatically for lifecycle
+  operations. If service or kernel startup fails, use `container system status`
+  and `container system logs` before retrying.
+- A failed `container network inspect default`, or a missing, malformed, or
+  ambiguous IPv4 gateway, stops `up` before image build or container mutation.
+  Inspect the command output and Apple system logs, correct the runtime network,
+  then rerun `up`; any existing managed container and named volume remain
+  intact.
+- A `codex-lb` name collision without the management label fails closed. The
+  operator decides whether to rename or explicitly remove that unrelated
+  object.
+- A volume ownership initialization failure leaves an existing managed object
+  undeleted and attempts to restart it when it was previously running. Inspect
+  the named volume and Apple system logs, then rerun `up`; no recursive
+  ownership rewrite or volume reset is performed automatically.
+- An application exit or readiness timeout prints recent logs and leaves both
+  the failed container and `codex-lb-data` available for inspection. After
+  correcting `.env.local` or the checked-out source, rerun `up`.
+- Port conflicts appear during runtime launch. Free localhost ports 2455 and
+  1455; the supported quick path does not silently choose ports that would
+  break the dashboard or OAuth callback contract.
+
+Development verification on Apple `container` 1.3 first exposed the three
+runtime differences above, then exercised the completed lifecycle entry point
+with a disposable named volume: default state files were created under the
+mount by UID/GID 1000, the inspected gateway was injected as an exact `/32`,
+protected HTTP and WebSocket ingress succeeded, `/health/ready` returned HTTP
+200, and a marker survived replacement and restart. Platform-independent unit
+tests separately ratchet gateway parsing, command ordering, and
+destructive-action guards; they do not claim to emulate Apple's virtualization
+stack.

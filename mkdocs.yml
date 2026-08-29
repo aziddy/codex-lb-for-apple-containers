@@ -67,6 +67,7 @@ nav:
   - Routing: routing.md
   - Database: database.md
   - Deployment:
+      - Apple Containers: deployment/apple-containers.md
       - Docker: deployment/docker.md
       - Kubernetes: deployment/kubernetes.md
       - Remote Access: deployment/remote.md
