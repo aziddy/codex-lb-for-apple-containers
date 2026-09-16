@@ -42,12 +42,13 @@ The first run can take a few minutes. It:
    traffic.
 3. Builds the repository `Dockerfile` for `linux/arm64` as
    `codex-lb:apple-local`.
-4. Initializes the persistent `codex-lb-data` volume for the image's non-root
-   user, then starts a labeled `codex-lb` container explicitly attached to the
-   inspected network.
-5. Publishes the dashboard/proxy on `127.0.0.1:2455` and the OAuth callback on
+4. Checks the persistent `codex-lb-data` volume's filesystem with `e2fsck` from
+   a short-lived privileged container and repairs recoverable errors.
+5. Initializes the volume for the image's non-root user, then starts a labeled
+   `codex-lb` container explicitly attached to the inspected network.
+6. Publishes the dashboard/proxy on `127.0.0.1:2455` and the OAuth callback on
    `127.0.0.1:1455`.
-6. Waits for `/health/ready` before printing the dashboard URL.
+7. Waits for `/health/ready` before printing the dashboard URL.
 
 No environment file is required. Open the dashboard, add an account, and then
 follow [Client Setup](../client-setup.md).
@@ -60,7 +61,7 @@ All operations use the same entry point:
 |---|---|
 | `./scripts/apple-container.sh up` | Build the current checkout, safely replace the managed container, and wait for readiness |
 | `./scripts/apple-container.sh build` | Build the image without changing the running container |
-| `./scripts/apple-container.sh restart` | Restart the existing managed container without rebuilding |
+| `./scripts/apple-container.sh restart` | Check the data volume, then restart the existing managed container without rebuilding |
 | `./scripts/apple-container.sh status` | Inspect the managed container |
 | `./scripts/apple-container.sh logs` | Follow application logs; `Ctrl-C` stops following, not the container |
 | `./scripts/apple-container.sh down` | Stop and remove the managed container while preserving its data volume |
@@ -131,6 +132,22 @@ Inspect its runtime metadata with:
 container volume inspect codex-lb-data
 ```
 
+Apple's container services are per-user launchd agents. At logout, restart, or
+shutdown they are terminated without shutting the guest VM down, so an in-flight
+write can leave the volume's ext4 filesystem inconsistent. Stop codex-lb before
+shutting down the Mac:
+
+```bash
+./scripts/apple-container.sh down
+```
+
+`container stop codex-lb` also works when you want to keep the container
+object. As a safety net, `up` and `restart` check the volume with `e2fsck` from
+a short-lived privileged container before starting codex-lb and repair
+recoverable errors automatically; the check adds a few seconds to each start.
+Starting the container any other way, such as `container start codex-lb` or a
+third-party UI's Start button, skips the check.
+
 To update the running checkout:
 
 ```bash
@@ -141,7 +158,9 @@ git pull
 `up` finishes the new image build before stopping an existing managed
 container. If the build fails, the previous instance keeps running. After a
 successful build, the replacement reuses `codex-lb-data` and runs the normal
-database compatibility checks.
+database compatibility checks. The first `up` after upgrading to a checkout
+that includes the filesystem check rebuilds the image; until then `restart`
+stops with an `e2fsck is missing` message.
 
 Apple Containers does not replace the project's PostgreSQL/Compose topology.
 Use [Docker](docker.md) or [Kubernetes](kubernetes.md) when you need PostgreSQL,
@@ -207,6 +226,51 @@ container system logs
 ```
 
 The script never recursively changes existing data and never resets the volume.
+
+### The data volume fails its filesystem check
+
+`up` and `restart` refuse to start codex-lb when `e2fsck -p` finds errors it
+cannot repair without operator input. An existing managed container is left
+stopped, nothing is deleted, and the volume is untouched. Back up the volume
+image first; `cp -c` makes an instant APFS clone of the file reported by
+`container volume inspect codex-lb-data`:
+
+```bash
+container volume inspect codex-lb-data
+cp -c "$HOME/Library/Application Support/com.apple.container/volumes/codex-lb-data/volume.img" \
+  ~/codex-lb-data-volume.img.bak
+```
+
+Then repair the filesystem while codex-lb is stopped and start it again:
+
+```bash
+container run --rm --user 0 --cap-add CAP_SYS_ADMIN --entrypoint sh \
+  --volume codex-lb-data:/mnt codex-lb:apple-local \
+  -c 'dev=$(findmnt -n -o SOURCE /mnt) && umount /mnt && e2fsck -f -y "$dev"'
+./scripts/apple-container.sh up
+```
+
+`e2fsck -y` may move orphaned files into `lost+found` on the volume; check the
+dashboard and your accounts after codex-lb is back before deleting the backup.
+
+If the message says that `e2fsck` is missing from the image, run `up` to
+rebuild it; `restart` against an image built before the check existed fails
+closed by design. If the message says the check could not run and the output
+shows `mount failed with errno 117` (`Structure needs cleaning`), the runtime
+itself cannot mount the volume, so no container can reach the filesystem.
+Repair the image file from the host instead. macOS ships no `e2fsck`, so
+install `e2fsprogs` with Homebrew and run it against the backed-up image while
+codex-lb is stopped:
+
+```bash
+brew install e2fsprogs
+"$(brew --prefix e2fsprogs)/sbin/e2fsck" -f -y \
+  "$HOME/Library/Application Support/com.apple.container/volumes/codex-lb-data/volume.img"
+./scripts/apple-container.sh up
+```
+
+`CAP_SYS_ADMIN` is used only by the short-lived check container, never by
+codex-lb itself.
 
 ### The container starts but never becomes ready
 

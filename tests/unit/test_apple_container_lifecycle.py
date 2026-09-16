@@ -189,7 +189,12 @@ case ${1:-} in
     ;;
   run)
     case " $* " in
+      *" --cap-add CAP_SYS_ADMIN "*)
+        touch "${FAKE_STATE_DIR}/volume-checked"
+        exit "${FAKE_VOLUME_CHECK_EXIT:-100}"
+        ;;
       *" --entrypoint chown "*)
+        [ -f "${FAKE_STATE_DIR}/volume-checked" ] || exit 46
         [ "${FAKE_VOLUME_INIT_FAILURE:-0}" != 1 ] || exit 43
         touch "${FAKE_STATE_DIR}/volume-initialized"
         ;;
@@ -256,6 +261,26 @@ def _volume_init_index(commands: list[str]) -> int:
     )
 
 
+def _volume_check_index(commands: list[str]) -> int:
+    return next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith("container run ") and " --cap-add CAP_SYS_ADMIN " in f" {command} "
+    )
+
+
+def _main_run_commands(commands: list[str]) -> list[str]:
+    return [
+        command
+        for command in commands
+        if command.startswith("container run ") and " --name codex-lb " in f" {command} "
+    ]
+
+
+def _volume_init_commands(commands: list[str]) -> list[str]:
+    return [command for command in commands if " --entrypoint chown " in f" {command} "]
+
+
 def _mutation_commands(commands: list[str]) -> list[str]:
     mutations = ("container system start", "container build", "container run", "container stop", "container delete")
     return [command for command in commands if command.startswith(mutations)]
@@ -268,6 +293,8 @@ def test_script_is_executable_and_posix_shell_parses() -> None:
 
 def test_repository_artifacts_expose_the_apple_container_contract() -> None:
     script = _SOURCE_SCRIPT.read_text(encoding="utf-8")
+    dockerfile = (_REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    runtime_stage = dockerfile[dockerfile.index(" AS runtime") :]
     guide = (_REPO_ROOT / "docs" / "deployment" / "apple-containers.md").read_text(encoding="utf-8")
     main_spec = (_REPO_ROOT / "openspec" / "specs" / "deployment-installation" / "spec.md").read_text(encoding="utf-8")
 
@@ -279,13 +306,19 @@ def test_repository_artifacts_expose_the_apple_container_contract() -> None:
     assert "CONTAINER_NETWORK=default" in script
     assert 'network inspect "${CONTAINER_NETWORK}"' in script
     assert "CODEX_LB_PROXY_UNAUTHENTICATED_CLIENT_CIDRS" in script
+    assert "--cap-add CAP_SYS_ADMIN" in script
+    assert "e2fsck -p -f" in script
+    assert "e2fsprogs" in runtime_stage
     for command in ("up", "build", "restart", "down", "status", "logs"):
         assert f"./scripts/apple-container.sh {command}" in guide
     assert "openspec/specs/deployment-installation" in guide
     assert "CODEX_LB_PROXY_UNAUTHENTICATED_CLIENT_CIDRS" in guide
+    assert "e2fsck" in guide
+    assert "### The data volume fails its filesystem check" in guide
     assert "CODEX_LB_PROXY_UNAUTHENTICATED_CLIENT_CIDRS" in main_spec
     assert "### Requirement: Apple Containers provides a zero-config local install path" in main_spec
     assert "### Requirement: Apple Containers lifecycle operations preserve ownership and data" in main_spec
+    assert "### Requirement: Apple Containers start operations verify the data volume filesystem" in main_spec
 
 
 @pytest.mark.parametrize(
@@ -309,9 +342,10 @@ def test_fresh_up_starts_system_builds_and_runs_secure_defaults(
     assert "container system start --enable-kernel-install" in commands
     gateway_index = _index(commands, "container network inspect default")
     build_index = _index(commands, "container build ")
+    check_index = _volume_check_index(commands)
     init_index = _volume_init_index(commands)
     run_index = _main_run_index(commands)
-    assert gateway_index < build_index < init_index < run_index
+    assert gateway_index < build_index < check_index < init_index < run_index
 
     init_command = commands[init_index]
     assert "--rm --user 0 --entrypoint chown" in init_command
@@ -328,6 +362,7 @@ def test_fresh_up_starts_system_builds_and_runs_secure_defaults(
     assert "--env CODEX_LB_DATA_DIR=/var/lib/codex-lb" in run_command
     assert "--env CODEX_LB_PROXY_UNAUTHENTICATED_CLIENT_CIDRS=192.168.64.1/32" in run_command
     assert "--user 0" not in run_command
+    assert "--cap-add" not in run_command
     assert "--env-file" not in run_command
     assert run_command.endswith("codex-lb:apple-local")
     assert "curl --fail --silent --show-error --max-time 2 http://127.0.0.1:2455/health/ready" in commands
@@ -414,7 +449,8 @@ def test_repeated_up_builds_before_replacing_managed_container(
     assert result.returncode == 0, result.stderr
     commands = fake_runtime.commands()
     assert _index(commands, "container build ") < _index(commands, "container stop ")
-    assert _index(commands, "container stop ") < _volume_init_index(commands)
+    assert _index(commands, "container stop ") < _volume_check_index(commands)
+    assert _volume_check_index(commands) < _volume_init_index(commands)
     assert _volume_init_index(commands) < _index(commands, "container delete ")
     assert _index(commands, "container delete ") < _main_run_index(commands)
     assert not any(command.startswith("container volume") for command in commands)
@@ -527,7 +563,147 @@ def test_restart_reuses_existing_container_without_rebuild(fake_runtime: FakeApp
     commands = fake_runtime.commands()
     assert any(command.startswith("container stop --time 40 codex-lb") for command in commands)
     assert "container start codex-lb" in commands
-    assert not any(command.startswith(("container build", "container run", "container delete")) for command in commands)
+    assert _index(commands, "container stop ") < _volume_check_index(commands) < _index(commands, "container start ")
+    assert not any(command.startswith(("container build", "container delete")) for command in commands)
+    assert _main_run_commands(commands) == []
+    assert _volume_init_commands(commands) == []
+
+
+def test_up_check_command_unmounts_and_runs_preen_e2fsck_from_the_built_image(
+    fake_runtime: FakeAppleContainerRuntime,
+) -> None:
+    result = fake_runtime.run("up")
+
+    assert result.returncode == 0, result.stderr
+    assert "codex-lb-data filesystem is clean" in result.stdout
+    commands = fake_runtime.commands()
+    check_command = commands[_volume_check_index(commands)]
+    assert "--rm --user 0 --cap-add CAP_SYS_ADMIN --entrypoint sh" in check_command
+    assert "--volume codex-lb-data:/var/lib/codex-lb" in check_command
+    assert "codex-lb:apple-local -c " in check_command
+    assert "umount" in check_command
+    assert "e2fsck -p -f" in check_command
+    assert check_command.endswith(" sh /var/lib/codex-lb")
+    assert "--name" not in check_command
+    assert "--detach" not in check_command
+    assert "--publish" not in check_command
+
+
+@pytest.mark.parametrize("check_exit", ["101", "102", "103"])
+def test_repaired_volume_errors_are_reported_and_startup_continues(
+    fake_runtime: FakeAppleContainerRuntime,
+    check_exit: str,
+) -> None:
+    fake_runtime.set_system_running()
+
+    result = fake_runtime.run("up", FAKE_VOLUME_CHECK_EXIT=check_exit)
+
+    assert result.returncode == 0, result.stderr
+    assert "codex-lb-data filesystem errors were repaired" in result.stdout
+    commands = fake_runtime.commands()
+    assert _volume_check_index(commands) < _volume_init_index(commands) < _main_run_index(commands)
+
+
+def test_uncorrectable_volume_errors_fail_closed_on_up_and_leave_previous_container_stopped(
+    fake_runtime: FakeAppleContainerRuntime,
+) -> None:
+    fake_runtime.set_system_running()
+    fake_runtime.set_container(managed=True, running=True)
+
+    result = fake_runtime.run("up", FAKE_VOLUME_CHECK_EXIT="104")
+
+    assert result.returncode != 0
+    assert "could not repair automatically" in result.stderr
+    assert "e2fsck -f -y" in result.stderr
+    assert "codex-lb-data was not verified; the previous codex-lb was not deleted" in result.stderr
+    assert "restarting the previous codex-lb" not in result.stdout
+    assert (fake_runtime.state_dir / "container-exists").exists()
+    assert not (fake_runtime.state_dir / "container-running").exists()
+    commands = fake_runtime.commands()
+    assert _index(commands, "container build ") < _index(commands, "container stop ") < _volume_check_index(commands)
+    assert "container start codex-lb" not in commands
+    assert not any(command.startswith("container delete") for command in commands)
+    assert _volume_init_commands(commands) == []
+    assert _main_run_commands(commands) == []
+
+
+def test_uncorrectable_volume_errors_fail_closed_on_fresh_up(fake_runtime: FakeAppleContainerRuntime) -> None:
+    fake_runtime.set_system_running()
+
+    result = fake_runtime.run("up", FAKE_VOLUME_CHECK_EXIT="104")
+
+    assert result.returncode != 0
+    assert "could not repair automatically" in result.stderr
+    assert "codex-lb-data was not verified; codex-lb was not created" in result.stderr
+    assert not (fake_runtime.state_dir / "container-exists").exists()
+    commands = fake_runtime.commands()
+    assert _volume_init_commands(commands) == []
+    assert _main_run_commands(commands) == []
+
+
+def test_uncorrectable_volume_errors_fail_closed_on_restart(fake_runtime: FakeAppleContainerRuntime) -> None:
+    fake_runtime.set_system_running()
+    fake_runtime.set_container(managed=True, running=True)
+
+    result = fake_runtime.run("restart", FAKE_VOLUME_CHECK_EXIT="104")
+
+    assert result.returncode != 0
+    assert "could not repair automatically" in result.stderr
+    assert "codex-lb-data was not verified; codex-lb was left stopped" in result.stderr
+    assert (fake_runtime.state_dir / "container-exists").exists()
+    assert not (fake_runtime.state_dir / "container-running").exists()
+    commands = fake_runtime.commands()
+    assert _index(commands, "container stop ") < _volume_check_index(commands)
+    assert "container start codex-lb" not in commands
+
+
+@pytest.mark.parametrize(
+    ("check_exit", "message"),
+    [
+        ("0", "could not verify the codex-lb-data filesystem (check exited 0)"),
+        ("1", "could not verify the codex-lb-data filesystem (check exited 1)"),
+        ("108", "could not verify the codex-lb-data filesystem (check exited 108)"),
+        ("227", "e2fsck is missing from codex-lb:apple-local; run 'scripts/apple-container.sh up'"),
+    ],
+)
+def test_volume_check_tooling_failure_restarts_previous_container_on_up(
+    fake_runtime: FakeAppleContainerRuntime,
+    check_exit: str,
+    message: str,
+) -> None:
+    fake_runtime.set_system_running()
+    fake_runtime.set_container(managed=True, running=True)
+
+    result = fake_runtime.run("up", FAKE_VOLUME_CHECK_EXIT=check_exit)
+
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert "codex-lb-data was not verified; the previous codex-lb was not deleted" in result.stderr
+    assert "restarting the previous codex-lb" in result.stdout
+    assert (fake_runtime.state_dir / "container-exists").exists()
+    assert (fake_runtime.state_dir / "container-running").exists()
+    commands = fake_runtime.commands()
+    assert _volume_check_index(commands) < _index(commands, "container start ")
+    assert "container start codex-lb" in commands
+    assert not any(command.startswith("container delete") for command in commands)
+    assert _volume_init_commands(commands) == []
+    assert _main_run_commands(commands) == []
+
+
+@pytest.mark.parametrize("check_exit", ["0", "1", "227"])
+def test_volume_check_tooling_failure_fails_closed_on_restart(
+    fake_runtime: FakeAppleContainerRuntime,
+    check_exit: str,
+) -> None:
+    fake_runtime.set_system_running()
+    fake_runtime.set_container(managed=True, running=True)
+
+    result = fake_runtime.run("restart", FAKE_VOLUME_CHECK_EXIT=check_exit)
+
+    assert result.returncode != 0
+    assert "codex-lb-data was not verified; codex-lb was left stopped" in result.stderr
+    assert not (fake_runtime.state_dir / "container-running").exists()
+    assert "container start codex-lb" not in fake_runtime.commands()
 
 
 def test_down_deletes_only_container_and_preserves_volume(fake_runtime: FakeAppleContainerRuntime) -> None:
