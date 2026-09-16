@@ -501,6 +501,53 @@ local replacement cannot be fully blue/green, so a failure after the old
 process stops can still cause downtime; the preserved image and volume make
 recovery another `up` invocation rather than a data migration.
 
+### Unclean host shutdown and the volume check
+
+Apple's container services (`container-apiserver`, the network and image
+helpers, and one runtime helper per running container) are per-user launchd
+agents. When the user logs out or the Mac restarts or shuts down, launchd sends
+SIGTERM to all of them at once and kills the API server after its five-second
+exit timeout; nothing shuts the guest VM down first. On 2026-09-14 a normal
+macOS shutdown while codex-lb was running left the `codex-lb-data` ext4 image
+with a directory entry for SQLite's `store.db-shm` pointing at a deleted inode
+and stale block and inode bitmaps. The next start failed inside the entrypoint's
+migration step with `sqlite3.OperationalError: unable to open database file`,
+because opening a WAL-mode database also opens the `-shm` file. SQLite's
+write-ahead log kept `store.db` itself consistent; the damage was confined to
+guest filesystem metadata and `e2fsck -p` cleared it in seconds.
+
+`up` and `restart` therefore check the volume before every start. Apple
+presents a named volume only as an already-mounted filesystem and `e2fsck`
+needs the unmounted block device, so the check runs from a short-lived root
+container built from the production image with `CAP_SYS_ADMIN` added: the guest
+resolves the device from the mount table, unmounts the volume, and runs
+`e2fsck -p -f`. Preen mode applies only fixes that are safe without operator
+judgement, and `-f` is required because the incident volume mounted "clean" and
+only failed on access. The application container never receives the
+capability. Shipping `e2fsprogs` in the shared runtime image costs a few
+megabytes and one more package in the Trivy surface; a separate helper image
+would have avoided that at the price of a second build and tag to manage.
+
+The guest reports e2fsck's status offset by 100. e2fsck exits 1 for "errors
+corrected" and Apple's CLI also exits 1 for its own failures, so plain
+propagation could report a repair that never happened, and a runtime that
+swallowed exit codes would report "clean" forever. The host trusts only 100
+through 107 and 227 (e2fsck absent) and treats everything else, including 0,
+as "could not verify".
+
+Failure handling is split by outcome. Errors that preen refuses to correct
+fail closed: `up` and `restart` neither initialize, delete, create, nor start
+codex-lb and leave an existing container stopped, because writing to a
+filesystem with stale bitmaps can allocate the same blocks twice and the manual
+repair needs exclusive access. A check that could not run says nothing about
+the volume, so `up` restarts a container it had stopped, the same rollback the
+ownership initializer uses, while `restart` fails with the status and the
+rebuild hint; that hint also covers an image built before the check existed.
+A host-side graceful stop (a login item that stops the container in its quit
+handler) would prevent the damage rather than repair it and is a separate
+change; a plain LaunchAgent that traps SIGTERM races the API server's kill and
+is not reliable.
+
 ### Concrete flow
 
 On a supported fresh Mac:
@@ -512,9 +559,9 @@ open http://localhost:2455
 
 The command checks the host and CLI, starts Apple container services (including
 the default kernel install when needed), resolves the current `default` network
-gateway, builds the image, initializes the `codex-lb-data` mount root, launches
-the non-root application on that network with its data path and gateway `/32`
-pinned, and polls `/health/ready`. A successful readiness response proves the
+gateway, builds the image, checks and repairs the `codex-lb-data` filesystem,
+initializes its mount root, launches the non-root application on that network
+with its data path and gateway `/32` pinned, and polls `/health/ready`. A successful readiness response proves the
 database path is writable and the published application port works; VM
 creation alone is not treated as success. Protected HTTP and WebSocket traffic
 must be exercised separately because readiness is intentionally unprotected.
@@ -522,7 +569,8 @@ must be exercised separately because readiness is intentionally unprotected.
 Running `up` again rebuilds and replaces only the labeled container while
 reusing its data and refreshing the gateway-derived environment. `restart`
 skips both discovery and build because it reuses the existing immutable
-container configuration; after changing Apple's default network, run `up`.
+container configuration, but it still checks the volume before starting it;
+after changing Apple's default network, run `up`.
 `down` removes the labeled container but preserves `codex-lb-data`; `status`
 and `logs` are read-only inspection paths.
 
@@ -546,6 +594,16 @@ and `logs` are read-only inspection paths.
   undeleted and attempts to restart it when it was previously running. Inspect
   the named volume and Apple system logs, then rerun `up`; no recursive
   ownership rewrite or volume reset is performed automatically.
+- A volume filesystem check that finds uncorrectable errors leaves an existing
+  managed object stopped and undeleted, leaves the volume untouched, and prints
+  the manual `e2fsck -f -y` recipe; back up the volume image, repair it, then
+  rerun `up`. A check that could not run (for example `e2fsck` missing from an
+  image built before the check existed) restarts a container `up` had stopped
+  and fails; rerun `up` to rebuild. When the damage is severe enough that the
+  runtime cannot mount the volume at all (`mount failed with errno 117`), the
+  check container never starts and the same "could not verify" path applies;
+  no container can reach that filesystem, so the guide documents a host-side
+  `e2fsck` on the volume image via Homebrew `e2fsprogs`.
 - An application exit or readiness timeout prints recent logs and leaves both
   the failed container and `codex-lb-data` available for inspection. After
   correcting `.env.local` or the checked-out source, rerun `up`.
@@ -558,7 +616,15 @@ runtime differences above, then exercised the completed lifecycle entry point
 with a disposable named volume: default state files were created under the
 mount by UID/GID 1000, the inspected gateway was injected as an exact `/32`,
 protected HTTP and WebSocket ingress succeeded, `/health/ready` returned HTTP
-200, and a marker survived replacement and restart. Platform-independent unit
-tests separately ratchet gateway parsing, command ordering, and
-destructive-action guards; they do not claim to emulate Apple's virtualization
-stack.
+200, and a marker survived replacement and restart. The volume check was
+verified the same way on a disposable named volume: a directory entry cleared
+with `debugfs clri` (the incident's exact damage) was repaired by `restart`
+in preen mode and the container became ready; multiply-claimed blocks made
+preen halt with `RUN fsck MANUALLY`, `restart` printed the manual recipe and
+left the container stopped, and the recipe followed by `restart` recovered it;
+a root inode rewritten as a regular file made the runtime's own mount fail
+with `errno 117`, which surfaced as "could not verify" with the container left
+stopped. On the real 512 GB sparse volume the check added roughly two seconds
+to `restart`. Platform-independent unit tests separately ratchet gateway
+parsing, command ordering, check-result classification, and destructive-action
+guards; they do not claim to emulate Apple's virtualization stack.

@@ -54,7 +54,7 @@ RUN apt-get update \
         bsdutils libblkid1 libc-bin libc6 libcap2 libmount1 libsmartcols1 libssl3t64 \
         libsystemd0 libudev1 libuuid1 openssl sed util-linux \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        openssl-provider-legacy \
+        e2fsprogs openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m pip uninstall -y pip setuptools wheel || true \

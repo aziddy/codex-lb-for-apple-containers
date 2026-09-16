@@ -17,9 +17,17 @@ ENV_FILE=${ROOT_DIR}/.env.local
 READY_URL=http://127.0.0.1:2455/health/ready
 READY_ATTEMPTS=90
 STOP_TIMEOUT_SECONDS=40
+# Runs inside the guest as: sh -c "${VOLUME_CHECK_PROGRAM}" sh <mount point>.
+# The guest reports e2fsck's status offset by 100 so the host cannot confuse a
+# CLI or VM failure (often exit 1) with e2fsck's "errors corrected" (also 1).
+VOLUME_CHECK_PROGRAM='dev=$(findmnt -n -o SOURCE "$1") || exit 64; umount "$1" || exit 65; e2fsck -p -f "$dev"; exit $((100 + $?))'
 
 say() {
   printf '[apple-container] %s\n' "$*"
+}
+
+warn() {
+  printf '[apple-container] warning: %s\n' "$*" >&2
 }
 
 fail() {
@@ -34,7 +42,7 @@ Usage: scripts/apple-container.sh [command]
 Commands:
   up       Build the checked-out source, recreate codex-lb, and wait for readiness (default)
   build    Build the checked-out source without changing the running container
-  restart  Restart the managed container without rebuilding it
+  restart  Check codex-lb-data, then restart the managed container without rebuilding it
   down     Stop and delete the managed container while preserving codex-lb-data
   status   Inspect the managed container
   logs     Follow the managed container logs
@@ -199,6 +207,56 @@ initialize_volume() {
     "${CONTAINER_DATA_DIR}"
 }
 
+print_volume_repair_guidance() {
+  cat >&2 <<EOF
+[apple-container] ${VOLUME_NAME} has filesystem errors that e2fsck could not repair automatically.
+[apple-container] Back up the volume image reported by '${CONTAINER_CLI} volume inspect ${VOLUME_NAME}' first,
+[apple-container] then repair it while ${CONTAINER_NAME} is stopped:
+[apple-container]   ${CONTAINER_CLI} run --rm --user 0 --cap-add CAP_SYS_ADMIN --entrypoint sh --volume ${VOLUME_NAME}:/mnt ${IMAGE_NAME} \\
+[apple-container]     -c 'dev=\$(findmnt -n -o SOURCE /mnt) && umount /mnt && e2fsck -f -y "\$dev"'
+[apple-container] See docs/deployment/apple-containers.md, "The data volume fails its filesystem check".
+EOF
+}
+
+# Exit status: 0 when the volume is clean or was repaired, 4 when e2fsck left
+# errors uncorrected, 1 when the check could not run or produce an e2fsck result.
+check_volume() {
+  say "checking ${VOLUME_NAME} filesystem"
+  volume_check_exit=0
+  "${CONTAINER_CLI}" run \
+    --rm \
+    --user 0 \
+    --cap-add CAP_SYS_ADMIN \
+    --entrypoint sh \
+    --volume "${VOLUME_NAME}:${CONTAINER_DATA_DIR}" \
+    "${IMAGE_NAME}" \
+    -c "${VOLUME_CHECK_PROGRAM}" \
+    sh \
+    "${CONTAINER_DATA_DIR}" \
+    || volume_check_exit=$?
+
+  case ${volume_check_exit} in
+    100)
+      say "${VOLUME_NAME} filesystem is clean"
+      ;;
+    101|102|103)
+      say "${VOLUME_NAME} filesystem errors were repaired"
+      ;;
+    104|105|106|107)
+      print_volume_repair_guidance
+      return 4
+      ;;
+    227)
+      warn "e2fsck is missing from ${IMAGE_NAME}; run 'scripts/apple-container.sh up' to rebuild the image."
+      return 1
+      ;;
+    *)
+      warn "could not verify the ${VOLUME_NAME} filesystem (check exited ${volume_check_exit}); run '${CONTAINER_CLI} system logs' for details. If the runtime could not mount the volume, see docs/deployment/apple-containers.md, \"The data volume fails its filesystem check\"."
+      return 1
+      ;;
+  esac
+}
+
 print_recent_logs() {
   printf '[apple-container] recent container logs:\n' >&2
   "${CONTAINER_CLI}" logs -n 100 "${CONTAINER_NAME}" >&2 || true
@@ -273,6 +331,18 @@ up() {
     fi
     stop_managed_container
 
+    volume_check_status=0
+    check_volume || volume_check_status=$?
+    if [ "${volume_check_status}" -ne 0 ]; then
+      # Uncorrected errors must not be written to again; any other check failure
+      # says nothing about the volume, so keep the previous process serving.
+      if [ "${was_running}" = true ] && [ "${volume_check_status}" -ne 4 ]; then
+        say "volume check did not complete; restarting the previous ${CONTAINER_NAME}"
+        "${CONTAINER_CLI}" start "${CONTAINER_NAME}" || true
+      fi
+      fail "${VOLUME_NAME} was not verified; the previous ${CONTAINER_NAME} was not deleted."
+    fi
+
     if ! initialize_volume; then
       if [ "${was_running}" = true ]; then
         say "volume initialization failed; restarting the previous ${CONTAINER_NAME}"
@@ -282,8 +352,9 @@ up() {
     fi
 
     "${CONTAINER_CLI}" delete "${CONTAINER_NAME}"
-  elif ! initialize_volume; then
-    fail "could not make ${VOLUME_NAME} writable by the image's non-root app user."
+  else
+    check_volume || fail "${VOLUME_NAME} was not verified; ${CONTAINER_NAME} was not created."
+    initialize_volume || fail "could not make ${VOLUME_NAME} writable by the image's non-root app user."
   fi
 
   run_container "${network_gateway}"
@@ -302,6 +373,7 @@ restart() {
   ensure_system
   require_managed_container
   stop_managed_container
+  check_volume || fail "${VOLUME_NAME} was not verified; ${CONTAINER_NAME} was left stopped."
   say "starting ${CONTAINER_NAME}"
   "${CONTAINER_CLI}" start "${CONTAINER_NAME}"
   wait_for_ready
