@@ -55,7 +55,7 @@ RUN apt-get update \
         libsmartcols1 libsqlite3-0 libssl3t64 \
         libsystemd0 libudev1 libuuid1 openssl perl-base sed util-linux \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        openssl-provider-legacy \
+        e2fsprogs openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m pip uninstall -y pip setuptools wheel || true \
