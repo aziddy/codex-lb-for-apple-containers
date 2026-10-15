@@ -3,10 +3,13 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 import {
+  CALENDAR_NOW,
   accounts,
   accountTrends,
   apiKeys,
   authSession,
+  calendarAccounts,
+  calendarResetCreditSnapshots,
   createRequestLogsResponse,
   filterOptions,
   models,
@@ -100,7 +103,8 @@ async function interceptApi(
     }
     const resetCreditsMatch = p.match(/^\/api\/accounts\/([^/]+)\/rate-limit-reset-credits$/);
     if (resetCreditsMatch) {
-      return fulfill(route, resetCreditSnapshots[decodeURIComponent(resetCreditsMatch[1])] ?? null);
+      const accountId = decodeURIComponent(resetCreditsMatch[1]);
+      return fulfill(route, resetCreditSnapshots[accountId] ?? calendarResetCreditSnapshots[accountId] ?? null);
     }
     if (p === "/api/models") return fulfill(route, { models });
     if (p === "/api/api-keys" || p === "/api/api-keys/") return fulfill(route, apiKeys);
@@ -132,12 +136,18 @@ async function capture(
     route: string;
     fullPage?: boolean;
     session?: SessionOverride;
+    accountList?: typeof accounts;
+    /** Pins `Date.now()` in the page for scenes whose layout depends on today. */
+    fixedTime?: Date;
     waitFor?: string;
     beforeScreenshot?: (page: Page) => Promise<void>;
   },
 ) {
   await applyTheme(page, opts.theme);
-  await interceptApi(page, opts.session);
+  await interceptApi(page, opts.session, opts.accountList);
+  if (opts.fixedTime) {
+    await page.clock.setFixedTime(opts.fixedTime);
+  }
 
   // Trigger prefers-reduced-motion so the existing CSS media query kicks in.
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -367,6 +377,55 @@ test("accounts list card ends after the final row when all accounts fit", async 
     (scrollRegionBox.y + scrollRegionBox.height);
   expect(bottomGap).toBeLessThanOrEqual(18);
   await expect(page.getByRole("button", { name: "Add account" })).toBeVisible();
+});
+
+test.describe("reset calendar", () => {
+  test.use({ timezoneId: "America/New_York" });
+
+  const calendarScene = { accountList: calendarAccounts, fixedTime: CALENDAR_NOW, waitFor: '[data-kind="credit"]' };
+
+  test("calendar month — dark", async ({ page }) => {
+    await capture(page, { ...calendarScene, file: "calendar-dark.jpg", theme: "dark", route: "/calendar" });
+  });
+
+  test("calendar month — light", async ({ page }) => {
+    await capture(page, { ...calendarScene, file: "calendar.jpg", theme: "light", route: "/calendar" });
+  });
+
+  test("calendar 7 days with a credit popover — dark", async ({ page }) => {
+    await capture(page, {
+      ...calendarScene,
+      file: "calendar-week-dark.jpg",
+      theme: "dark",
+      route: "/calendar?view=7d&date=2026-02-19",
+      beforeScreenshot: async (currentPage) => {
+        await currentPage.getByRole("button", { name: /^Reset credit expires, alex\.research/ }).first().click();
+        await currentPage.getByRole("dialog").waitFor();
+        await currentPage.waitForTimeout(400);
+      },
+    });
+  });
+
+  test("calendar 14 days — dark", async ({ page }) => {
+    await capture(page, {
+      ...calendarScene,
+      file: "calendar-14d-dark.jpg",
+      theme: "dark",
+      route: "/calendar?view=14d&date=2026-02-12",
+    });
+  });
+
+  test("calendar — narrow", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await capture(page, {
+      ...calendarScene,
+      file: "calendar-narrow-dark.jpg",
+      theme: "dark",
+      route: "/calendar?date=2026-02-19",
+      waitFor: '[data-testid="calendar-day-agenda"] [data-kind="weekly"]',
+      fullPage: true,
+    });
+  });
 });
 
 test("settings — light", async ({ page }) => {

@@ -115,6 +115,15 @@
   --sidebar-accent-foreground: oklch(0.25 0.03 264);
   --sidebar-border: oklch(0.915 0.008 264);
   --sidebar-ring: oklch(0.708 0 0);
+  /* Reset calendar account colours: they differ in lightness as well as hue,
+     and the foreground is the text drawn on a solid account chip. */
+  --calendar-1: oklch(0.52 0.15 250);
+  --calendar-2: oklch(0.50 0.17 300);
+  --calendar-3: oklch(0.50 0.09 195);
+  --calendar-4: oklch(0.55 0.18 350);
+  --calendar-5: oklch(0.56 0.12 65);
+  --calendar-6: oklch(0.45 0.10 150);
+  --calendar-event-foreground: oklch(0.99 0 0);
 }
 
 .dark {
@@ -152,6 +161,13 @@
   --sidebar-accent-foreground: oklch(0.90 0 0);
   --sidebar-border: oklch(0.26 0 0);
   --sidebar-ring: oklch(0.556 0 0);
+  --calendar-1: oklch(0.74 0.12 245);
+  --calendar-2: oklch(0.74 0.13 300);
+  --calendar-3: oklch(0.80 0.11 190);
+  --calendar-4: oklch(0.76 0.13 350);
+  --calendar-5: oklch(0.82 0.11 75);
+  --calendar-6: oklch(0.70 0.10 150);
+  --calendar-event-foreground: oklch(0.14 0 0);
 }
 
 @layer base {
@@ -232,6 +248,23 @@
   pointer-events: none;
   padding: 4px 8px;
   margin: -4px -8px;
+}
+
+/* Reset calendar mini month: a dot under days that hold a visible event. */
+.calendar-has-events > button {
+  position: relative;
+}
+
+.calendar-has-events > button::after {
+  content: "";
+  position: absolute;
+  bottom: 3px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 9999px;
+  background: var(--muted-foreground);
 }
 
 /* Card hover lift */

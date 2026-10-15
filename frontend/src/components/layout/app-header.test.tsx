@@ -133,6 +133,7 @@ describe("AppHeader", () => {
     expect(await screen.findByRole("link", { name: /Dashboard/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Reports/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Accounts/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Calendar/i })).toHaveAttribute("href", "/calendar");
     expect(screen.getByRole("link", { name: /APIs/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Settings/i })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Automations" })).not.toBeInTheDocument();
@@ -316,6 +317,7 @@ describe("AppHeader", () => {
       expect(screen.getByRole("link", { name: /Dashboard/i })).toBeInTheDocument();
       expect(screen.getByRole("link", { name: /Settings/i })).toBeInTheDocument();
       expect(screen.queryByRole("link", { name: /Accounts/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /Calendar/i })).not.toBeInTheDocument();
     });
 
     it.each([
@@ -327,7 +329,7 @@ describe("AppHeader", () => {
 
       renderHeader();
 
-      for (const name of [/Dashboard/i, /Reports/i, /Accounts/i, /APIs/i, /Settings/i]) {
+      for (const name of [/Dashboard/i, /Reports/i, /Accounts/i, /Calendar/i, /APIs/i, /Settings/i]) {
         expect(screen.getByRole("link", { name })).toBeInTheDocument();
       }
     });

@@ -536,6 +536,71 @@ export const resetCreditSnapshots: Record<string, RateLimitResetCreditsSnapshot>
   }),
 );
 
+// ── Reset calendar ──
+// The calendar scenes pin the browser clock to Thu 12 Feb 2026, 4:49 PM New York
+// time, so weekly resets and banked credits spread across a February month view.
+
+export const CALENDAR_NOW = new Date("2026-02-12T21:49:00Z");
+
+function calendarIso(days: number, hours = 0, minutes = 0): string {
+  return new Date(CALENDAR_NOW.getTime() + ((days * 24 + hours) * 60 + minutes) * 60_000).toISOString();
+}
+
+const calendarCreditExpiries: Record<string, string[]> = {
+  cal_alex: [calendarIso(6, 22, 47), calendarIso(13, 21, 7), calendarIso(22, 0, 36)],
+  cal_james: [calendarIso(7, 1, 56)],
+  cal_admin: [calendarIso(6, 15, 11), calendarIso(18, 18, 26)],
+};
+
+function calendarAccount(
+  accountId: string,
+  email: string,
+  planType: string,
+  secondaryRemainingPercent: number,
+  resetAtSecondary: string,
+): AccountSummary {
+  const expiries = calendarCreditExpiries[accountId] ?? [];
+  return createAccountSummary({
+    accountId,
+    email,
+    displayName: email,
+    planType,
+    usage: { primaryRemainingPercent: 100, secondaryRemainingPercent, monthlyRemainingPercent: null },
+    resetAtSecondary,
+    windowMinutesSecondary: 10_080,
+    availableResetCredits: expiries.length,
+    resetCreditNearestExpiresAt: expiries[0] ?? null,
+  });
+}
+
+export const calendarAccounts: AccountSummary[] = [
+  calendarAccount("cal_alex", "alex.research@fastlab.io", "pro", 97, calendarIso(6, 8)),
+  calendarAccount("cal_james", "dev.james@gmail.com", "plus", 41, calendarIso(1, 16, 23)),
+  calendarAccount("cal_sarah", "sarah.kim@gmail.com", "pro", 12, calendarIso(4, 1, 41)),
+  calendarAccount("cal_admin", "admin@startupco.io", "team", 68, calendarIso(0, 5, 31)),
+];
+
+export const calendarResetCreditSnapshots: Record<string, RateLimitResetCreditsSnapshot> = Object.fromEntries(
+  Object.entries(calendarCreditExpiries).map(([accountId, expiries]) => [
+    accountId,
+    {
+      availableCount: expiries.length,
+      nearestExpiresAt: expiries[0] ?? null,
+      credits: expiries.map((expiresAt, index) => ({
+        id: `${accountId}_reset_credit_${index + 1}`,
+        status: "available",
+        resetType: "rate_limit",
+        grantedAt: calendarIso(-14),
+        expiresAt,
+        title: "Rate limit reset",
+        description: "Mock reset calendar credit",
+        redeemedAt: null,
+        redeemStartedAt: null,
+      })),
+    },
+  ]),
+);
+
 export const filterOptions = createRequestLogFilterOptions({
   accountIds: accounts.map((a) => a.accountId),
   modelOptions: [
