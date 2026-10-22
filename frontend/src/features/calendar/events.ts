@@ -1,7 +1,7 @@
 import type { AccountSummary, RateLimitResetCreditsSnapshot } from "@/features/accounts/schemas";
 import { parseDate } from "@/utils/formatters";
 
-export const CALENDAR_VIEWS = ["month", "14d", "7d"] as const;
+export const CALENDAR_VIEWS = ["month", "14d", "7d", "schedule"] as const;
 export type CalendarView = (typeof CALENDAR_VIEWS)[number];
 
 export type CalendarEventKind = "weekly" | "estimated" | "credit";
@@ -29,7 +29,7 @@ const MINUTE_MS = 60_000;
 // Upper bound on projected weekly occurrences per account in one range, so a
 // malformed (tiny) window can never turn into an unbounded loop.
 const MAX_OCCURRENCES_PER_ACCOUNT = 64;
-const VIEW_DAYS: Record<Exclude<CalendarView, "month">, number> = { "14d": 14, "7d": 7 };
+const VIEW_DAYS: Record<Exclude<CalendarView, "month">, number> = { "14d": 14, "7d": 7, schedule: 30 };
 const DAY_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 export function isCalendarView(value: string | null): value is CalendarView {
@@ -84,7 +84,7 @@ export function visibleRange(view: CalendarView, anchor: Date): DateRange {
     const start = startOfWeek(first);
     return { start, end: addDays(start, weeks * 7) };
   }
-  const start = startOfWeek(anchor);
+  const start = view === "schedule" ? startOfDay(anchor) : startOfWeek(anchor);
   return { start, end: addDays(start, VIEW_DAYS[view]) };
 }
 

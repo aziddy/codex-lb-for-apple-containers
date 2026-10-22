@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { CalendarPage } from "@/features/calendar/components/calendar-page";
 import { useCalendarPreferencesStore } from "@/features/calendar/use-calendar-preferences";
+import { usePrivacyStore } from "@/hooks/use-privacy";
+import { useTimeFormatStore } from "@/hooks/use-time-format";
 import { OPERATOR_PERMISSIONS, VIEWER_PERMISSIONS, createAccountSummary } from "@/test/mocks/factories";
 import { server } from "@/test/mocks/server";
 import { renderWithProviders } from "@/test/utils";
@@ -67,6 +69,8 @@ beforeEach(() => {
     showCredits: true,
   });
   useAuthStore.setState({ permissions: VIEWER_PERMISSIONS });
+  usePrivacyStore.setState({ blurred: false });
+  useTimeFormatStore.setState({ timeFormat: "12h" });
   server.use(
     http.get("/api/accounts", () => HttpResponse.json({ accounts: [ALPHA, BETA] })),
     http.get("/api/accounts/:accountId/rate-limit-reset-credits", ({ params }) => {
@@ -79,6 +83,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   useAuthStore.setState({ permissions: [] });
+  usePrivacyStore.setState({ blurred: false });
+  useTimeFormatStore.setState({ timeFormat: "12h" });
   window.localStorage.removeItem("codex-lb-calendar-preferences");
 });
 
@@ -158,26 +164,142 @@ describe("CalendarPage", () => {
     expect(screen.getByRole("heading", { level: 2, name: /Oct 25\s*–\s*Nov 7, 2026/ })).toBeInTheDocument();
   });
 
-  it("offers Redeem credit to sessions that can write accounts", async () => {
+  it.each(["month", "schedule"])("offers Redeem credit to writers in %s", async (view) => {
     useAuthStore.setState({ permissions: OPERATOR_PERMISSIONS });
     const user = userEvent.setup();
-    renderCalendar();
+    renderCalendar(`/calendar?view=${view}&date=2026-10-22`);
 
-    const [credit] = await within(dayCell("2026-10-22")).findAllByRole("button", { name: /^Reset credit expires/ });
+    const [credit] = await screen.findAllByRole("button", { name: /^Reset credit expires/ });
     await user.click(credit);
     await user.click(await screen.findByRole("button", { name: "Redeem credit" }));
 
     expect(await screen.findByRole("heading", { name: "Redeem rate-limit reset credit" })).toBeInTheDocument();
   });
 
-  it("does not offer Redeem credit to read-only sessions", async () => {
+  it.each(["month", "schedule"])("does not offer Redeem credit to read-only sessions in %s", async (view) => {
     const user = userEvent.setup();
-    renderCalendar();
+    renderCalendar(`/calendar?view=${view}&date=2026-10-22`);
 
-    const [credit] = await within(dayCell("2026-10-22")).findAllByRole("button", { name: /^Reset credit expires/ });
+    const [credit] = await screen.findAllByRole("button", { name: /^Reset credit expires/ });
     await user.click(credit);
 
     expect(await screen.findByRole("link", { name: "Details" })).toHaveAttribute("href", "/accounts?selected=acc_alpha");
     await waitFor(() => expect(screen.queryByRole("button", { name: "Redeem credit" })).not.toBeInTheDocument());
+  });
+});
+
+describe("Calendar Schedule view", () => {
+  it("groups every event by local day and time, with month headings and today's marker", async () => {
+    vi.setSystemTime(local(2026, 10, 22, 7));
+    renderCalendar("/calendar?view=schedule&date=2026-10-22");
+
+    const schedule = screen.getByRole("region", { name: "Schedule" });
+    const day = await within(schedule).findByRole("region", { name: "Thu, Oct 22" });
+    expect(within(day).getByText("22", { selector: "time" })).toHaveAttribute("aria-current", "date");
+    expect(within(day).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Reset credit expires, alpha@example.com, Thu, Oct 22 8:00 AM",
+      "Weekly reset, alpha@example.com, Thu, Oct 22 9:00 AM",
+      "Reset credit expires, alpha@example.com, Thu, Oct 22 3:36 PM",
+      "Reset credit expires, alpha@example.com, Thu, Oct 22 6:45 PM",
+    ]);
+    expect(within(schedule).getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual([
+      "October 2026", "November 2026",
+    ]);
+    expect(within(schedule).queryByRole("region", { name: "Fri, Oct 23" })).not.toBeInTheDocument();
+    expect(within(schedule).queryByRole("region", { name: "Sat, Nov 21" })).not.toBeInTheDocument();
+    const estimated = within(schedule).getAllByRole("button", { name: /^Estimated weekly reset/ });
+    expect(estimated[0]).toHaveClass("border-dashed");
+    expect(within(schedule).queryByRole("button", { name: /more/ })).not.toBeInTheDocument();
+  });
+
+  it("switches to Schedule with the current anchor and steps by 30 days", async () => {
+    const user = userEvent.setup();
+    renderCalendar("/calendar?view=month&date=2026-10-22");
+    await user.click(screen.getByRole("button", { name: "Schedule" }));
+    expect(window.location.search).toBe("?view=schedule&date=2026-10-22");
+    expect(screen.getByRole("button", { name: "Schedule" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { level: 2, name: /Oct 22\s*–\s*Nov 20, 2026/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Next 30 days" }));
+    expect(window.location.search).toBe("?view=schedule&date=2026-11-21");
+    await user.click(screen.getByRole("button", { name: "Previous 30 days" }));
+    expect(window.location.search).toBe("?view=schedule&date=2026-10-22");
+    await user.click(screen.getByRole("button", { name: /^Today$/ }));
+    expect(window.location.search).toBe("?view=schedule&date=2026-10-15");
+    const today = await screen.findByRole("region", { name: "Thu, Oct 15" });
+    expect(within(today).getByText("15", { selector: "time" })).toHaveAttribute("aria-current", "date");
+    expect(within(today).getByText("No resets or credit expiries on this day.")).toBeInTheDocument();
+  });
+
+  it("uses mini-calendar selection as the first Schedule day", async () => {
+    const user = userEvent.setup();
+    renderCalendar("/calendar?view=schedule&date=2026-10-22");
+    await user.click(screen.getByRole("button", { name: /October 29th, 2026/ }));
+    expect(window.location.search).toBe("?view=schedule&date=2026-10-29");
+    const schedule = screen.getByRole("region", { name: "Schedule" });
+    expect(await within(schedule).findByRole("region", { name: "Thu, Oct 29" })).toBeInTheDocument();
+    expect(within(schedule).queryByRole("region", { name: "Thu, Oct 22" })).not.toBeInTheDocument();
+  });
+
+  it("applies account and event filters and shows an empty period", async () => {
+    const user = userEvent.setup();
+    renderCalendar("/calendar?view=schedule&date=2026-10-22");
+    const schedule = screen.getByRole("region", { name: "Schedule" });
+    await within(schedule).findAllByRole("button", { name: /^Reset credit expires/ });
+
+    await user.click(screen.getByRole("checkbox", { name: /alpha@example\.com/ }));
+    expect(within(schedule).queryByRole("button", { name: /alpha@example\.com/ })).not.toBeInTheDocument();
+    expect(within(schedule).getAllByRole("button", { name: /beta@example\.com/ }).length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("checkbox", { name: /alpha@example\.com/ }));
+    await user.click(screen.getByRole("checkbox", { name: "Estimated resets" }));
+    expect(within(schedule).queryByRole("button", { name: /^Estimated weekly reset/ })).not.toBeInTheDocument();
+    expect(within(schedule).getByRole("button", { name: /^Weekly reset/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: "Weekly resets" }));
+    expect(within(schedule).queryByRole("button", { name: /^Weekly reset/ })).not.toBeInTheDocument();
+    expect(within(schedule).getAllByRole("button", { name: /^Reset credit expires/ })).toHaveLength(3);
+    await user.click(screen.getByRole("checkbox", { name: "Credit expiries" }));
+    expect(within(schedule).getByRole("status")).toHaveTextContent("No resets or credit expiries in this period.");
+  });
+
+  it("updates privacy blur and times when display preferences change", async () => {
+    renderCalendar("/calendar?view=schedule&date=2026-10-22");
+    const schedule = screen.getByRole("region", { name: "Schedule" });
+    const [credit] = await within(schedule).findAllByRole("button", { name: /^Reset credit expires/ });
+    expect(within(credit).getByText("8:00 AM")).toBeInTheDocument();
+    act(() => {
+      usePrivacyStore.setState({ blurred: true });
+      useTimeFormatStore.setState({ timeFormat: "24h" });
+    });
+    expect(within(credit).getByText("alpha@example.com")).toHaveClass("privacy-blur");
+    expect(within(credit).getByText("08:00")).toBeInTheDocument();
+  });
+
+  it("waits for initial credit data before showing an empty state", async () => {
+    let releaseSnapshot!: () => void;
+    const pending = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+    let requested = false;
+    server.use(http.get("/api/accounts/:accountId/rate-limit-reset-credits", async () => {
+      requested = true;
+      await pending;
+      return HttpResponse.json(ALPHA_SNAPSHOT);
+    }));
+    useCalendarPreferencesStore.setState({ showWeekly: false });
+    renderCalendar("/calendar?view=schedule&date=2026-10-22");
+    const schedule = screen.getByRole("region", { name: "Schedule" });
+    await waitFor(() => expect(requested).toBe(true));
+    expect(schedule).toHaveAttribute("aria-busy", "true");
+    expect(within(schedule).getByRole("status")).toHaveTextContent("Loading...");
+    expect(within(schedule).queryByText("No resets or credit expiries in this period.")).not.toBeInTheDocument();
+    await act(async () => { releaseSnapshot(); });
+    expect(await within(schedule).findAllByRole("button", { name: /^Reset credit expires/ })).toHaveLength(3);
+    expect(schedule).toHaveAttribute("aria-busy", "false");
+  });
+
+  it("shows an empty period and today's marker when there are no accounts", async () => {
+    server.use(http.get("/api/accounts", () => HttpResponse.json({ accounts: [] })));
+    renderCalendar("/calendar?view=schedule");
+    const schedule = screen.getByRole("region", { name: "Schedule" });
+    expect(await within(schedule).findByText("No resets or credit expiries in this period.")).toBeInTheDocument();
+    expect(within(schedule).getByText("15", { selector: "time" })).toHaveAttribute("aria-current", "date");
   });
 });

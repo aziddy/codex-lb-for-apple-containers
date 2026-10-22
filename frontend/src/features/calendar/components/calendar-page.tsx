@@ -10,6 +10,7 @@ import { usePermission } from "@/features/auth/hooks/use-auth";
 import { CalendarSidebar } from "@/features/calendar/components/calendar-sidebar";
 import type { CalendarEntry } from "@/features/calendar/entries";
 import { MonthGrid } from "@/features/calendar/components/month-grid";
+import { ScheduleView } from "@/features/calendar/components/schedule-view";
 import { TimeGrid } from "@/features/calendar/components/time-grid";
 import {
   CALENDAR_VIEWS,
@@ -41,7 +42,7 @@ export function CalendarPage() {
   const now = useNow();
   const today = startOfDay(now);
   const { view, anchor, navigate } = useCalendarParams(now);
-  const { accountsQuery, accounts, snapshots } = useCalendarData();
+  const { accountsQuery, accounts, snapshots, isLoading } = useCalendarData();
   const hiddenAccountIds = useCalendarPreferencesStore((state) => state.hiddenAccountIds);
   const showWeekly = useCalendarPreferencesStore((state) => state.showWeekly);
   const showEstimated = useCalendarPreferencesStore((state) => state.showEstimated);
@@ -120,6 +121,15 @@ export function CalendarPage() {
               onRedeem={handleRedeem}
               onSelectDay={selectDay}
               onShowMore={(day) => navigate({ view: "7d", anchor: day })}
+            />
+          ) : view === "schedule" ? (
+            <ScheduleView
+              range={range}
+              today={today}
+              entriesByDay={entriesByDay}
+              isLoading={isLoading}
+              canRedeem={canWriteAccounts}
+              onRedeem={handleRedeem}
             />
           ) : (
             <TimeGrid

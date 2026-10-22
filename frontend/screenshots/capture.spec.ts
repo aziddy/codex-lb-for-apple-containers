@@ -426,6 +426,44 @@ test.describe("reset calendar", () => {
       fullPage: true,
     });
   });
+
+  for (const theme of ["dark", "light"] as const) {
+    test(`calendar schedule — ${theme}`, async ({ page }) => {
+      await capture(page, {
+        ...calendarScene,
+        file: `calendar-schedule-${theme}.jpg`,
+        theme,
+        route: "/calendar?view=schedule&date=2026-02-12",
+        beforeScreenshot: async (currentPage) => {
+          await expect(currentPage.getByRole("button", { name: "Schedule", exact: true })).toHaveAttribute("aria-pressed", "true");
+          const schedule = currentPage.getByRole("region", { name: "Schedule", exact: true });
+          await expect(schedule.locator('[aria-current="date"]')).toHaveText("12");
+          await expect(schedule.getByRole("heading", { name: "March 2026", exact: true })).toHaveCount(1);
+        },
+      });
+    });
+  }
+
+  test("calendar schedule — narrow", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await capture(page, {
+      ...calendarScene,
+      file: "calendar-schedule-narrow-dark.jpg",
+      theme: "dark",
+      route: "/calendar?view=schedule&date=2026-02-12",
+    });
+
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      const schedule = page.getByRole("region", { name: "Schedule", exact: true });
+      const card = schedule.getByRole("button", { name: /^Reset credit expires/ }).first();
+      await card.click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await expect(page.getByRole("link", { name: "Details", exact: true })).toBeVisible();
+      await page.keyboard.press("Escape");
+    }
+  });
 });
 
 test("settings — light", async ({ page }) => {

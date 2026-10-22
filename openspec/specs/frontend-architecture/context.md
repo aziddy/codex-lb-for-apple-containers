@@ -80,3 +80,13 @@ The product-boundary regression renders the real `/dashboard` App route with the
 ## Import multiple auth files
 
 Sequential imports reuse the existing single-file request and refresh hook. A batch of A, B, C that fails on B retains B and C for retry and never resubmits A. Selection and submission are disabled while a request is in flight. The API and OAuth flows remain unchanged.
+
+## Calendar Schedule view
+
+Schedule follows a familiar calendar agenda layout: a narrow date column beside stacked account-colored cards, with month/year headings and a highlighted date for today. Its requirements are in [spec.md](spec.md#requirement-calendar-schedule-view-navigation); user instructions live in [Reset Calendar](../../../docs/reset-calendar.md).
+
+The bounded 30-day window starts at the selected date, making Today and mini-calendar jumps predictable without adding infinite-scroll state. For example, `/calendar?view=schedule&date=2026-10-22` includes October 22 through November 20; Next starts November 21. Local calendar-day arithmetic preserves midnight boundaries across daylight-saving transitions.
+
+Events are reset/expiry instants, so cards show one local time rather than a duration. Known resets are solid, estimated resets are dashed, and credit expiries retain their countdown and outlined/tinted appearance. The same event component handles privacy blur, details, and permission-gated redemption in every view.
+
+Empty days are skipped except today. Account/event filters can empty the whole period; initial account and credit requests show loading before an empty-period message is possible. Failed credit snapshots retain existing query behavior, and browsing backwards does not reconstruct historical resets. No API, dependency, configuration, or core-navigation changes are needed.

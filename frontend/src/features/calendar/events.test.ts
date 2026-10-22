@@ -10,6 +10,7 @@ import {
   isCalendarView,
   layoutTimedEvents,
   parseDayKey,
+  rangeDays,
   stepAnchor,
   visibleRange,
 } from "@/features/calendar/events";
@@ -51,12 +52,28 @@ describe("calendar ranges", () => {
     expect(dayKey(stepAnchor("7d", local(2026, 10, 15), -1))).toBe("2026-10-08");
   });
 
+  it.each([
+    [local(2026, 10, 22, 16), "2026-10-22", "2026-11-21"],
+    [local(2026, 12, 20), "2026-12-20", "2027-01-19"],
+    [local(2028, 2, 1), "2028-02-01", "2028-03-02"],
+    [local(2026, 3, 1), "2026-03-01", "2026-03-31"],
+  ])("covers exactly 30 local dates from a Schedule anchor %s", (anchor, start, end) => {
+    const range = visibleRange("schedule", anchor);
+    expect(rangeKeys(range)).toEqual([start, end]);
+    expect(rangeDays(range)).toHaveLength(30);
+    expect(rangeDays(range).every((day) => day.getHours() === 0)).toBe(true);
+    const next = stepAnchor("schedule", anchor, 1);
+    expect(dayKey(next)).toBe(end);
+    expect(dayKey(stepAnchor("schedule", next, -1))).toBe(start);
+  });
+
   it("parses only real YYYY-MM-DD dates and known views", () => {
     expect(parseDayKey("2026-10-22")?.getDate()).toBe(22);
     expect(parseDayKey("2026-02-31")).toBeNull();
     expect(parseDayKey("not-a-date")).toBeNull();
     expect(parseDayKey(null)).toBeNull();
     expect(isCalendarView("14d")).toBe(true);
+    expect(isCalendarView("schedule")).toBe(true);
     expect(isCalendarView("year")).toBe(false);
   });
 });

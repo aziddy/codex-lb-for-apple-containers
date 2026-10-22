@@ -27,17 +27,19 @@ export function useCalendarData() {
     () => accounts.filter((account) => (account.availableResetCredits ?? 0) > 0).map((account) => account.accountId),
     [accounts],
   );
-  const snapshots = useQueries({
+  const { snapshots, creditsPending } = useQueries({
     queries: creditAccountIds.map((accountId) => ({
       queryKey: ["accounts", "reset-credits", accountId],
       queryFn: () => getRateLimitResetCredits(accountId),
       staleTime: 60_000,
     })),
-    combine: (results): AccountCreditSnapshot[] =>
-      results.map((result, index) => ({ accountId: creditAccountIds[index], snapshot: result.data })),
+    combine: (results): { snapshots: AccountCreditSnapshot[]; creditsPending: boolean } => ({
+      snapshots: results.map((result, index) => ({ accountId: creditAccountIds[index], snapshot: result.data })),
+      creditsPending: results.some((result) => result.isPending),
+    }),
   });
 
-  return { accountsQuery, accounts, snapshots };
+  return { accountsQuery, accounts, snapshots, isLoading: accountsQuery.isPending || creditsPending };
 }
 
 /** The current time, refreshed every minute for the "now" line and relative labels. */

@@ -12,6 +12,7 @@ import { type CalendarEntry, accountLabel, eventColorStyle } from "@/features/ca
 import { formatDayLong, formatEventTime } from "@/features/calendar/format";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { usePrivacyStore } from "@/hooks/use-privacy";
+import { useTimeFormatStore } from "@/hooks/use-time-format";
 import { cn } from "@/lib/utils";
 import {
   formatDateTimeInline,
@@ -47,6 +48,7 @@ function EventIcon({ entry, className }: { entry: CalendarEntry; className?: str
 
 function useEntryLabels(entry: CalendarEntry) {
   const { t } = useTranslation();
+  useTimeFormatStore((state) => state.timeFormat);
   const blurred = usePrivacyStore((state) => state.blurred);
   const label = accountLabel(entry.account);
   const time = formatEventTime(entry.at);
@@ -63,8 +65,8 @@ function useEntryLabels(entry: CalendarEntry) {
 
 export type EventChipProps = {
   entry: CalendarEntry;
-  /** `chip`: a compact grid chip; `row`: a touch-sized agenda row. */
-  variant?: "chip" | "row";
+  /** Compact grid chip, neutral day-agenda row, or colored Schedule card. */
+  variant?: "chip" | "row" | "schedule";
   /** Narrow columns (14-day grid): icon and time only; the label stays in the accessible name and popover. */
   compact?: boolean;
   canRedeem: boolean;
@@ -101,7 +103,27 @@ export function EventChip({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        {variant === "row" ? (
+        {variant === "schedule" ? (
+          <button
+            type="button"
+            aria-label={ariaLabel}
+            data-kind={entry.kind}
+            style={{ ...eventColorStyle(entry.colorSlot), ...style }}
+            className={cn(
+              "flex min-h-20 w-full min-w-0 flex-col gap-1 rounded-lg border px-3 py-2.5 text-left transition-[filter] hover:brightness-110 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none sm:px-4",
+              CHIP_KIND_CLASSES[entry.kind],
+              className,
+            )}
+          >
+            <span className="flex w-full min-w-0 items-center gap-2 text-sm font-semibold">
+              <EventIcon entry={entry} className="size-4 text-current" />
+              <span>{kindLabel}</span>
+              {renderCountdown("text-xs")}
+            </span>
+            <span className="text-sm tabular-nums">{time}</span>
+            <span className={cn("w-full truncate text-xs opacity-80", labelClassName)}>{label}</span>
+          </button>
+        ) : variant === "row" ? (
           <button
             type="button"
             aria-label={ariaLabel}

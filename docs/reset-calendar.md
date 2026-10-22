@@ -8,8 +8,13 @@ The **Calendar** page in the dashboard (`/calendar`) puts every account's weekly
 
 - **Month** shows every week that touches the month; step forward to see later months.
 - **14 days** and **7 days** are time grids starting on Sunday, with each event at its exact time and a line marking the current time on today.
+- **Schedule** lists the next 30 days from the selected date, grouped by day with month headings and colored event cards. It shows every event on a day, highlights today, and skips other empty days. Previous and next move by 30 days; **Today** and the mini-calendar choose a new starting date.
 
 The view and the date are kept in the address (`/calendar?view=7d&date=2026-10-22`), so a view can be bookmarked or shared. In the month view a day shows up to three events; **+N more** opens the 7-day view for that day. On a phone, the month shows coloured dots and the selected day's events are listed below it.
+
+For example, `/calendar?view=schedule&date=2026-10-22` lists October 22 through November 20. Schedule uses the same filters and event details as the grids. Each card shows the event's local time in your preferred 12- or 24-hour format.
+
+![Reset calendar, Schedule view](screenshots/calendar-schedule-dark.jpg)
 
 ## What it shows
 
